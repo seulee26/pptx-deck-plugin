@@ -48,7 +48,27 @@ BODY_PLACEHOLDER_MARKERS = (
     "저희는 프레젠테이션",
     "세련되고 정교한",
     "안녕하세요. 매주",
+    "수많은 주제와",
+    "간편하게 커스터마이징",
+    "타이틀을 설명하는",
+    "파워포인트 템플릿",
 )
+
+# Any shape whose stripped text appears here is pure boilerplate decoration
+# that must be blanked regardless of injector logic.
+GLOBAL_BOILERPLATE_TOKENS = (
+    "수많은 주제와",
+    "간편하게 커스터마이징",
+    "저희는 프레젠테이션",
+    "세련되고 정교한",
+    "안녕하세요. 매주",
+    "다양한 주제와 디자인",
+    "비즈니스, 교육, 마케팅",
+    "타이틀을 설명하는",
+    "비즈니스\x0b파워포인트 템플릿",
+)
+
+FOOTER_TOKENS = ("COMPANY LOGO HERE", "PRESENTATION TEMPLATE")
 
 
 def is_body_placeholder(text: str) -> bool:
@@ -64,15 +84,24 @@ def iter_shapes(shapes):
 
 def set_runs_text(tf, new_text: str) -> bool:
     """Write `new_text` into the first run of the first paragraph, blanking the rest.
-    Returns True if at least one run was modified."""
+    If no run exists (common in table cells the template author left blank),
+    create one on the first paragraph so the text still lands in the cell.
+    Returns True if the cell now holds `new_text`."""
     if not new_text:
         return False
     runs = [r for p in tf.paragraphs for r in p.runs]
-    if not runs:
-        return False
-    runs[0].text = new_text
-    for r in runs[1:]:
-        r.text = ""
+    if runs:
+        runs[0].text = new_text
+        for r in runs[1:]:
+            r.text = ""
+        return True
+    # No runs anywhere — create one on the first paragraph.
+    if tf.paragraphs:
+        p = tf.paragraphs[0]
+    else:
+        p = tf.add_paragraph()
+    run = p.add_run()
+    run.text = new_text
     return True
 
 
@@ -117,6 +146,9 @@ def inject_cover(slide, content: dict) -> list[str]:
             continue
         text_shapes.append((shape, t, _explicit_font_max(shape.text_frame)))
 
+    # Cover typically has three text elements: a long marketing headline, a
+    # multi-line paragraph, and a "COMPANY LOGO HERE" footer. The headline is
+    # the largest-font or shortest-inherited-font shape.
     inherited = [(s, t) for s, t, sz in text_shapes if sz == 0 and "LOGO" not in t]
     title_shape = None
     if inherited:
@@ -126,36 +158,80 @@ def inject_cover(slide, content: dict) -> list[str]:
         if non_logo:
             title_shape = max(non_logo, key=lambda x: x[2])[0]
 
-    if title_shape is not None and title:
-        set_runs_text(title_shape.text_frame, title)
+    if title_shape is not None:
+        set_runs_text(title_shape.text_frame, title or " ")
 
+    subtitle_shape = None
     if subtitle:
         for shape, t, _ in text_shapes:
             if shape is title_shape or "LOGO" in t:
                 continue
             if len(t) >= 15:
                 set_runs_text(shape.text_frame, subtitle)
+                subtitle_shape = shape
                 break
 
-    if company:
-        for shape, t, _ in text_shapes:
-            if "COMPANY LOGO" in t or "LOGO HERE" in t:
-                set_runs_text(shape.text_frame, company)
-                break
+    # Blank the long marketing paragraph (and any other decorative body text)
+    # that didn't get a legit value.
+    for shape, t, _ in text_shapes:
+        if shape is title_shape or shape is subtitle_shape:
+            continue
+        if any(tok in t for tok in GLOBAL_BOILERPLATE_TOKENS):
+            set_runs_text(shape.text_frame, " ")
+
+    # Company logo footer: replace with provided company name, else blank it so
+    # "COMPANY LOGO HERE" doesn't leak into the deck.
+    for shape, t, _ in text_shapes:
+        if "COMPANY LOGO" in t or "LOGO HERE" in t:
+            set_runs_text(shape.text_frame, company or " ")
+            break
     return []
 
 
 def inject_agenda(slide, content: dict) -> list[str]:
     headings = content.get("headings", [])
     slot = 0
+
+    # Agenda items may live in either (a) a table (slides 3, 4) or (b) discrete
+    # text boxes (slide 2). Handle both. For table rows, also blank the number
+    # column when there is no matching heading — an unlabeled "08 / 09" looks
+    # like a loose end on the render.
     for shape in iter_shapes(slide.shapes):
-        if not shape.has_text_frame:
+        if shape.has_table:
+            tbl = shape.table
+            for row in tbl.rows:
+                heading_cell = None
+                number_cell = None
+                for cell in row.cells:
+                    ct = cell.text_frame.text.strip()
+                    if "목차를" in ct and "입력" in ct:
+                        heading_cell = cell
+                    elif re.fullmatch(r"\d{1,2}", ct):
+                        number_cell = cell
+                if heading_cell is None:
+                    continue
+                heading = headings[slot] if slot < len(headings) else ""
+                if heading:
+                    set_runs_text(heading_cell.text_frame, heading)
+                else:
+                    set_runs_text(heading_cell.text_frame, " ")
+                    if number_cell is not None:
+                        set_runs_text(number_cell.text_frame, " ")
+                slot += 1
+        elif shape.has_text_frame:
+            t = shape.text_frame.text.strip()
+            if "목차를" in t and "입력" in t:
+                heading = headings[slot] if slot < len(headings) else ""
+                set_runs_text(shape.text_frame, heading or " ")
+                slot += 1
+
+    # Blank any leftover decorative body text on the agenda slide.
+    for shape in iter_shapes(slide.shapes):
+        if not shape.has_text_frame or shape.has_table:
             continue
         t = shape.text_frame.text.strip()
-        if "목차를" in t and "입력" in t:
-            heading = headings[slot] if slot < len(headings) else ""
-            set_runs_text(shape.text_frame, heading or " ")
-            slot += 1
+        if any(tok in t for tok in GLOBAL_BOILERPLATE_TOKENS):
+            set_runs_text(shape.text_frame, " ")
     return []
 
 
@@ -170,6 +246,10 @@ def inject_section(slide, content: dict) -> list[str]:
             set_runs_text(shape.text_frame, step)
         elif any(p in t for p in ("타이틀 입력", "타이틀을 입력")) and title:
             set_runs_text(shape.text_frame, title)
+        elif any(tok in t for tok in GLOBAL_BOILERPLATE_TOKENS):
+            set_runs_text(shape.text_frame, " ")
+        elif t in FOOTER_TOKENS:
+            set_runs_text(shape.text_frame, " ")
     return []
 
 
@@ -188,6 +268,162 @@ def inject_kpi(slide, content: dict) -> list[str]:
             set_runs_text(shape.text_frame, title)
         elif body and any(p in t for p in ("내용 입력", "내용을 입력")):
             set_runs_text(shape.text_frame, body)
+    return []
+
+
+def inject_dashboard(slide, content: dict) -> list[str]:
+    """Render a consulting-style KPI dashboard on top of a cleanish template
+    slide. Clears ALL existing shapes and draws a custom layout:
+      - Section title (top)
+      - Answer-first headline (below title)
+      - 4 KPI cards in a horizontal strip
+      - KEY TAKEAWAYS bullet list at the bottom
+    """
+    from pptx.util import Emu, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
+
+    title = (content.get("title") or "").strip()
+    headline = (content.get("body") or "").strip()
+    data = content.get("data") or {}
+    kpis = data.get("kpis") or []
+    insights = [s for s in (data.get("insights") or []) if s and str(s).strip()]
+
+    # Wipe every shape on the slide — we redraw from scratch.
+    for shape in list(slide.shapes):
+        sp = shape._element
+        parent = sp.getparent()
+        if parent is not None:
+            parent.remove(sp)
+
+    PURPLE = RGBColor(0x6E, 0x5A, 0xE6)
+    INK = RGBColor(0x1E, 0x1E, 0x2A)
+    MUTED = RGBColor(0x6B, 0x6B, 0x7A)
+    CARD = RGBColor(0xFF, 0xFF, 0xFF)
+    CARD_EDGE = RGBColor(0xE6, 0xE6, 0xEE)
+    SUBT = RGBColor(0x33, 0x33, 0x3D)
+
+    def add_textbox(x, y, w, h, *, runs, wrap=True, align=PP_ALIGN.LEFT, margins=0):
+        tb = slide.shapes.add_textbox(Emu(int(x * 914400)), Emu(int(y * 914400)),
+                                      Emu(int(w * 914400)), Emu(int(h * 914400)))
+        tf = tb.text_frame
+        tf.word_wrap = wrap
+        tf.margin_left = tf.margin_right = Emu(margins)
+        tf.margin_top = tf.margin_bottom = Emu(margins)
+        p = tf.paragraphs[0]
+        p.alignment = align
+        for i, spec in enumerate(runs):
+            r = p.add_run()
+            r.text = spec["text"]
+            r.font.name = spec.get("font", "Pretendard")
+            r.font.size = Pt(spec.get("size", 12))
+            c = spec.get("color", INK)
+            r.font.color.rgb = c
+        return tb
+
+    def add_card(x, y, w, h):
+        sh = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                    Emu(int(x * 914400)), Emu(int(y * 914400)),
+                                    Emu(int(w * 914400)), Emu(int(h * 914400)))
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = CARD
+        sh.line.color.rgb = CARD_EDGE
+        sh.line.width = Emu(int(0.01 * 914400))
+        sh.shadow.inherit = False
+        # Hide default text in the auto-shape
+        sh.text_frame.text = ""
+        return sh
+
+    # --- Title ---
+    if title:
+        add_textbox(0.72, 0.72, 11.89, 0.55,
+                    runs=[{"text": title, "font": "Pretendard SemiBold",
+                           "size": 26, "color": INK}])
+
+    # --- Headline ---
+    if headline:
+        add_textbox(0.72, 1.45, 11.89, 0.6,
+                    runs=[{"text": headline, "font": "Pretendard",
+                           "size": 15, "color": SUBT}])
+
+    # --- KPI Cards ---
+    if kpis:
+        kpis = kpis[:4]
+        card_top = 2.35
+        card_h = 2.5
+        gap = 0.2
+        total_w = 11.89
+        card_w = (total_w - gap * (len(kpis) - 1)) / len(kpis)
+        left = 0.72
+        for i, kpi in enumerate(kpis):
+            x = left + i * (card_w + gap)
+            add_card(x, card_top, card_w, card_h)
+            # Label (small, top of card)
+            label = str(kpi.get("label", ""))
+            if label:
+                add_textbox(x + 0.3, card_top + 0.35, card_w - 0.6, 0.35,
+                            runs=[{"text": label, "font": "Pretendard SemiBold",
+                                   "size": 11, "color": MUTED}])
+            # Big number (center of card). Auto-shrink when the value is a
+            # long label (e.g. a product or customer name) instead of a pure
+            # number — Korean glyphs are ~2× wider so we need to step down.
+            value = str(kpi.get("value", ""))
+            if value:
+                # Count Korean chars as 2 ("wide") and everything else as 1.
+                width_score = sum(2 if ord(c) > 0x3130 else 1 for c in value)
+                if width_score <= 6:
+                    vsize = 32
+                elif width_score <= 10:
+                    vsize = 24
+                elif width_score <= 14:
+                    vsize = 20
+                else:
+                    vsize = 16
+                add_textbox(x + 0.3, card_top + 0.85, card_w - 0.6, 0.9,
+                            runs=[{"text": value, "font": "Pretendard SemiBold",
+                                   "size": vsize, "color": INK}])
+            # Delta / sub-text (bottom of card)
+            delta = str(kpi.get("delta", ""))
+            if delta:
+                add_textbox(x + 0.3, card_top + 1.8, card_w - 0.6, 0.35,
+                            runs=[{"text": delta, "font": "Pretendard",
+                                   "size": 10, "color": PURPLE}])
+
+    # --- Key Takeaways ---
+    if insights:
+        tb_left = 0.72
+        tb_top = 5.3
+        tb_w = 11.89
+        tb_h = 1.9
+        tb = slide.shapes.add_textbox(Emu(int(tb_left * 914400)),
+                                      Emu(int(tb_top * 914400)),
+                                      Emu(int(tb_w * 914400)),
+                                      Emu(int(tb_h * 914400)))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        tf.margin_left = tf.margin_right = Emu(0)
+        tf.margin_top = tf.margin_bottom = Emu(0)
+        p0 = tf.paragraphs[0]
+        r0 = p0.add_run()
+        r0.text = "KEY TAKEAWAYS"
+        r0.font.name = "Pretendard SemiBold"
+        r0.font.size = Pt(9)
+        r0.font.color.rgb = PURPLE
+        for line in insights[:3]:
+            p = tf.add_paragraph()
+            p.space_before = Pt(4)
+            rb = p.add_run()
+            rb.text = "•  "
+            rb.font.name = "Pretendard SemiBold"
+            rb.font.size = Pt(11)
+            rb.font.color.rgb = PURPLE
+            rt = p.add_run()
+            rt.text = str(line)
+            rt.font.name = "Pretendard"
+            rt.font.size = Pt(11)
+            rt.font.color.rgb = SUBT
+
     return []
 
 
@@ -237,6 +473,40 @@ def inject_matrix(slide, content: dict) -> list[str]:
     return [] if body_slots else ["matrix-no-slots"]
 
 
+def _emu_to_in(emu):
+    if emu is None:
+        return None
+    return emu / 914400
+
+
+def _blank_cell(cell) -> None:
+    """Zero out every run in a table cell so no template text leaks through."""
+    tf = cell.text_frame
+    runs = [r for p in tf.paragraphs for r in p.runs]
+    if runs:
+        runs[0].text = ""
+        for r in runs[1:]:
+            r.text = ""
+
+
+TABLE_LEFTOVER_MARKERS = (
+    "상세 타이틀",
+    "내용 입력",
+    "내용을 입력",
+    "타이틀 입력",
+    "타이틀을 입력",
+    "메인 타이틀",
+    "서브 타이틀",
+    "안녕하세요",
+    "파워포인트 템플릿",
+    "매주 업데이트",
+    "다양한 주제",
+    "세련되고 정교한",
+    "저희는 프레젠테이션",
+    "비즈니스",
+)
+
+
 def inject_table(slide, content: dict) -> list[str]:
     data = content.get("data") or {}
     headers = data.get("headers", [])
@@ -246,29 +516,177 @@ def inject_table(slide, content: dict) -> list[str]:
 
     title_done = False
     sub_done = False
+    # Collect decorative shapes (icon cards, sample text boxes) that sit ABOVE
+    # the data table. We don't fill them with content, so leaving them empty
+    # wastes half the slide — drop them entirely once we've located the table.
+    table_top_in = None
+    decorative_shapes: list = []
+    table_shape = None
+
     for shape in iter_shapes(slide.shapes):
         if shape.has_table:
+            table_shape = shape
+            table_top_in = _emu_to_in(shape.top)
             tbl = shape.table
             n_cols = len(tbl.columns)
             n_rows = len(tbl.rows)
-            for c, header in enumerate(headers[:n_cols]):
-                if header:
-                    set_runs_text(tbl.rows[0].cells[c].text_frame, str(header))
-            for r_idx, row in enumerate(rows[: n_rows - 1], start=1):
-                for c_idx, val in enumerate(row[:n_cols]):
+
+            # Headers (row 0): overwrite every cell, blanking any extra cols.
+            for c in range(n_cols):
+                header_text = headers[c] if c < len(headers) else ""
+                if header_text:
+                    set_runs_text(tbl.rows[0].cells[c].text_frame, str(header_text))
+                else:
+                    _blank_cell(tbl.rows[0].cells[c])
+
+            # Data rows: always overwrite, even empties — prevents the template's
+            # sample text ("매출채권회수기간 86.5%" etc.) from bleeding through.
+            data_rows_in_slide = min(len(rows), n_rows - 1)
+            for r_idx in range(1, n_rows):
+                src_row = rows[r_idx - 1] if r_idx - 1 < data_rows_in_slide else []
+                for c_idx in range(n_cols):
+                    val = src_row[c_idx] if c_idx < len(src_row) else ""
                     if val:
                         set_runs_text(tbl.rows[r_idx].cells[c_idx].text_frame, str(val))
+                    else:
+                        _blank_cell(tbl.rows[r_idx].cells[c_idx])
+
         elif shape.has_text_frame:
             t = shape.text_frame.text.strip()
             if not title_done and "메인 타이틀" in t:
                 set_runs_text(shape.text_frame, title or " ")
                 title_done = True
             elif not sub_done and "서브 타이틀" in t:
-                set_runs_text(shape.text_frame, body or " ")
-                sub_done = True
-            elif t == "타이틀 입력":
+                # We render the headline via a dedicated text box below so the
+                # built-in subtitle placeholder (which sits ABOVE the title in
+                # this template) would duplicate it — blank it out.
                 set_runs_text(shape.text_frame, " ")
+                sub_done = True
+            elif any(m in t for m in TABLE_LEFTOVER_MARKERS):
+                set_runs_text(shape.text_frame, " ")
+            elif any(tok in t for tok in GLOBAL_BOILERPLATE_TOKENS):
+                set_runs_text(shape.text_frame, " ")
+            elif t in FOOTER_TOKENS:
+                set_runs_text(shape.text_frame, " ")
+
+    # Second pass: drop decorative shapes (rounded rects, ovals, icon freeforms,
+    # empty text boxes) that live above the data table. They came from the
+    # template's "icon cards" decoration and add no value once we've blanked
+    # their placeholder copy — the cards render as awkward empty white panels.
+    if table_top_in is not None:
+        for shape in list(slide.shapes):
+            if shape.has_table:
+                continue
+            top_in = _emu_to_in(shape.top)
+            if top_in is None or top_in >= table_top_in - 0.1:
+                continue
+            # Preserve the title placeholder (has meaningful injected text).
+            if shape.has_text_frame:
+                t = shape.text_frame.text.strip()
+                if t and t != " " and "메인 타이틀" not in t and "서브 타이틀" not in t:
+                    # Keep the title we just injected.
+                    continue
+            # Everything else above the table (card backgrounds, ovals, icon
+            # freeforms, boilerplate text boxes we blanked) is decorative noise.
+            decorative_shapes.append(shape)
+
+        for sh in decorative_shapes:
+            sp = sh._element
+            parent = sp.getparent()
+            if parent is not None:
+                parent.remove(sp)
+
+    # Reposition + enlarge the data table so it fills the vacated space.
+    # Template leaves the table at y≈4.4", which looks orphaned now that the
+    # decorative icon cards above it are gone. Pull it up just under the
+    # title and stretch it vertically so it actually uses the slide.
+    if table_shape is not None:
+        from pptx.util import Emu
+        new_top = Emu(int(2.75 * 914400))    # y = 2.75" (headline sits above)
+        new_height = Emu(int(2.7 * 914400))  # h = 2.7"  → bottom at 5.45"
+        old_height_emu = int(table_shape.height)
+        table_shape.top = new_top
+        table_shape.height = new_height
+        # Scale each row's height by the same factor so header + data rows
+        # share the new real estate proportionally.
+        if old_height_emu:
+            scale = int(new_height) / old_height_emu
+            for row in table_shape.table.rows:
+                row.height = Emu(int(int(row.height) * scale))
+
+    # Layer in consulting-style commentary: a one-line "answer-first" headline
+    # just above the table, and bulleted insights below it. Without these the
+    # slide is just a number dump — adding them turns the table into a real
+    # analytical page.
+    headline = (content.get("body") or "").strip()
+    insights = [s for s in (data.get("insights") or []) if s and str(s).strip()]
+    if headline:
+        _add_headline_box(slide, headline)
+    if insights:
+        _add_insights_box(slide, insights)
+
     return []
+
+
+def _add_headline_box(slide, text: str) -> None:
+    from pptx.util import Emu, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    left = Emu(int(0.72 * 914400))
+    top = Emu(int(2.0 * 914400))
+    width = Emu(int(11.89 * 914400))
+    height = Emu(int(0.6 * 914400))
+    tb = slide.shapes.add_textbox(left, top, width, height)
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Emu(0)
+    tf.margin_top = tf.margin_bottom = Emu(0)
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+    run = p.add_run()
+    run.text = text
+    run.font.name = "Pretendard SemiBold"
+    run.font.size = Pt(18)
+    run.font.color.rgb = RGBColor(0x1E, 0x1E, 0x2A)
+
+
+def _add_insights_box(slide, bullets: list) -> None:
+    from pptx.util import Emu, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    left = Emu(int(0.72 * 914400))
+    top = Emu(int(5.65 * 914400))
+    width = Emu(int(11.89 * 914400))
+    height = Emu(int(1.65 * 914400))
+    tb = slide.shapes.add_textbox(left, top, width, height)
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Emu(0)
+    tf.margin_top = tf.margin_bottom = Emu(0)
+
+    # First paragraph: small uppercase label "KEY TAKEAWAYS"
+    p0 = tf.paragraphs[0]
+    p0.alignment = PP_ALIGN.LEFT
+    r0 = p0.add_run()
+    r0.text = "KEY TAKEAWAYS"
+    r0.font.name = "Pretendard SemiBold"
+    r0.font.size = Pt(9)
+    r0.font.color.rgb = RGBColor(0x6E, 0x5A, 0xE6)
+
+    for line in bullets[:3]:
+        p = tf.add_paragraph()
+        p.alignment = PP_ALIGN.LEFT
+        p.space_before = Pt(4)
+        r_bullet = p.add_run()
+        r_bullet.text = "•  "
+        r_bullet.font.name = "Pretendard SemiBold"
+        r_bullet.font.size = Pt(11)
+        r_bullet.font.color.rgb = RGBColor(0x6E, 0x5A, 0xE6)
+        r_text = p.add_run()
+        r_text.text = str(line)
+        r_text.font.name = "Pretendard"
+        r_text.font.size = Pt(11)
+        r_text.font.color.rgb = RGBColor(0x33, 0x33, 0x3D)
 
 
 def inject_image(slide, content: dict) -> list[str]:
@@ -305,19 +723,36 @@ def inject_closing(slide, content: dict) -> list[str]:
     message = content.get("message", "Thank you")
     title_done = False
     sub_done = False
+    shapes_to_drop = []
     for shape in iter_shapes(slide.shapes):
+        if shape.has_table:
+            # Remove the sample dashboard grid entirely — a blanked grid still
+            # shows visible borders and looks ugly on the closing page.
+            shapes_to_drop.append(shape)
+            continue
         if not shape.has_text_frame:
             continue
         t = shape.text_frame.text.strip()
         if "감사합니다" in t or "Thank" in t or "THANK" in t:
             set_runs_text(shape.text_frame, message)
-            return []
+            title_done = True
+            continue
         if not title_done and "메인 타이틀" in t:
             set_runs_text(shape.text_frame, message)
             title_done = True
         elif not sub_done and "서브 타이틀" in t:
             set_runs_text(shape.text_frame, " ")
             sub_done = True
+        elif any(m in t for m in TABLE_LEFTOVER_MARKERS):
+            set_runs_text(shape.text_frame, " ")
+        elif any(tok in t for tok in GLOBAL_BOILERPLATE_TOKENS):
+            set_runs_text(shape.text_frame, " ")
+        elif t in FOOTER_TOKENS:
+            set_runs_text(shape.text_frame, " ")
+
+    for sh in shapes_to_drop:
+        sp = sh._element
+        sp.getparent().remove(sp)
     return []
 
 
@@ -326,6 +761,7 @@ INJECTORS = {
     "agenda": inject_agenda,
     "section": inject_section,
     "kpi": inject_kpi,
+    "dashboard": inject_dashboard,
     "process": inject_process,
     "matrix": inject_matrix,
     "table": inject_table,
@@ -373,6 +809,41 @@ def drop_slide(prs, slide) -> None:
             return
 
 
+def _strip_layout_top_decorations(prs) -> None:
+    """Remove tiny decorative shapes pinned to the top edge of every shared
+    slide layout that is still referenced by the final deck.
+
+    The template ships with a 0.73" × 0.19" rounded-corner "nub" anchored at
+    y=0 on several layouts (e.g. ``5_사용자 지정 레이아웃``). Once the real
+    slides inherit the layout it shows up as a random purple crumb at the top-
+    left corner — a visible artifact the user flagged. It's a user-drawn
+    decoration (``userDrawn="1"``), not a placeholder, so stripping it can't
+    break inheritance.
+    """
+    layouts_in_use: set = set()
+    for slide in prs.slides:
+        layouts_in_use.add(id(slide.slide_layout))
+
+    for layout in prs.slide_layouts:
+        if id(layout) not in layouts_in_use:
+            continue
+        for shape in list(layout.shapes):
+            if shape.is_placeholder:
+                continue
+            top_in = _emu_to_in(shape.top)
+            height_in = _emu_to_in(shape.height)
+            if top_in is None or height_in is None:
+                continue
+            # Only drop shapes anchored within the top 0.3" and under 0.5" tall
+            # — that matches the decorative nub, not genuine banner/background
+            # art that may legitimately hug the top edge.
+            if top_in <= 0.05 and height_in <= 0.5:
+                sp = shape._element
+                parent = sp.getparent()
+                if parent is not None:
+                    parent.remove(sp)
+
+
 def assemble(template_path: Path, plan_path: Path, output_path: Path) -> dict:
     plan = json.loads(plan_path.read_text())
     prs = Presentation(str(template_path))
@@ -401,6 +872,8 @@ def assemble(template_path: Path, plan_path: Path, output_path: Path) -> dict:
 
     for slide in original_slides:
         drop_slide(prs, slide)
+
+    _strip_layout_top_decorations(prs)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))

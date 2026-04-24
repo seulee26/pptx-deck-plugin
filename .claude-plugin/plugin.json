@@ -1,7 +1,7 @@
 {
   "name": "pptx-deck",
-  "version": "0.1.0",
-  "description": "Pixel-perfect PPT generator from Excel/Word/PDF, driven by an agent team that maps content to a classified template catalog.",
+  "version": "0.2.0",
+  "description": "Executive-ready PPT generator from Excel/Word/PDF. Summarizes tabular data into <=30 slides (<=7 sections x <=3 items), then pixel-perfectly clones a classified template catalog so each item lands on the right kpi/process/matrix/table/content layout.",
   "author": {
     "name": "seulee26",
     "url": "https://github.com/seulee26"
