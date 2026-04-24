@@ -2,7 +2,29 @@
   "name": "pptx-deck",
   "version": "0.1.0",
   "description": "Pixel-perfect PPT generator from Excel/Word/PDF, driven by an agent team that maps content to a classified template catalog.",
-  "author": "lee",
-  "commands": "./commands",
-  "agents": "./agents"
+  "author": {
+    "name": "seulee26",
+    "url": "https://github.com/seulee26"
+  },
+  "repository": "https://github.com/seulee26/pptx-deck-plugin",
+  "license": "MIT",
+  "keywords": [
+    "pptx",
+    "powerpoint",
+    "slides",
+    "deck",
+    "presentation",
+    "excel",
+    "template"
+  ],
+  "commands": [
+    "./commands/make-deck.md"
+  ],
+  "agents": [
+    "./agents/deck-orchestrator.md",
+    "./agents/content-parser.md",
+    "./agents/slide-matcher.md",
+    "./agents/deck-assembler.md",
+    "./agents/qa-verifier.md"
+  ]
 }
