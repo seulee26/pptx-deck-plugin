@@ -1,0 +1,8 @@
+{
+  "name": "pptx-deck",
+  "version": "0.1.0",
+  "description": "Pixel-perfect PPT generator from Excel/Word/PDF, driven by an agent team that maps content to a classified template catalog.",
+  "author": "lee",
+  "commands": "./commands",
+  "agents": "./agents"
+}
