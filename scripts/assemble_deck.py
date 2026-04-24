@@ -427,6 +427,330 @@ def inject_dashboard(slide, content: dict) -> list[str]:
     return []
 
 
+def _deck_palette():
+    from pptx.dml.color import RGBColor
+    return {
+        "PURPLE": RGBColor(0x6E, 0x5A, 0xE6),
+        "PURPLE_LT": RGBColor(0xB8, 0xAE, 0xF2),
+        "INK": RGBColor(0x1E, 0x1E, 0x2A),
+        "MUTED": RGBColor(0x6B, 0x6B, 0x7A),
+        "SUBT": RGBColor(0x33, 0x33, 0x3D),
+        "CARD": RGBColor(0xFF, 0xFF, 0xFF),
+        "CARD_EDGE": RGBColor(0xE6, 0xE6, 0xEE),
+        "BG_SOFT": RGBColor(0xF7, 0xF7, 0xFB),
+    }
+
+
+def _wipe_slide(slide) -> None:
+    for shape in list(slide.shapes):
+        sp = shape._element
+        parent = sp.getparent()
+        if parent is not None:
+            parent.remove(sp)
+
+
+def _add_text(slide, x, y, w, h, runs, *, wrap=True, align=None):
+    from pptx.util import Emu, Pt
+    from pptx.enum.text import PP_ALIGN
+    tb = slide.shapes.add_textbox(Emu(int(x * 914400)), Emu(int(y * 914400)),
+                                  Emu(int(w * 914400)), Emu(int(h * 914400)))
+    tf = tb.text_frame
+    tf.word_wrap = wrap
+    tf.margin_left = tf.margin_right = Emu(0)
+    tf.margin_top = tf.margin_bottom = Emu(0)
+    p = tf.paragraphs[0]
+    if align is not None:
+        p.alignment = align
+    for spec in runs:
+        r = p.add_run()
+        r.text = spec["text"]
+        r.font.name = spec.get("font", "Pretendard")
+        r.font.size = Pt(spec.get("size", 12))
+        if "color" in spec:
+            r.font.color.rgb = spec["color"]
+    return tb
+
+
+def _add_takeaways(slide, insights, top=5.3, height=1.9):
+    from pptx.util import Emu, Pt
+    pal = _deck_palette()
+    if not insights:
+        return
+    tb = slide.shapes.add_textbox(Emu(int(0.72 * 914400)),
+                                  Emu(int(top * 914400)),
+                                  Emu(int(11.89 * 914400)),
+                                  Emu(int(height * 914400)))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Emu(0)
+    tf.margin_top = tf.margin_bottom = Emu(0)
+    p0 = tf.paragraphs[0]
+    r0 = p0.add_run()
+    r0.text = "KEY TAKEAWAYS"
+    r0.font.name = "Pretendard SemiBold"
+    r0.font.size = Pt(9)
+    r0.font.color.rgb = pal["PURPLE"]
+    for line in insights[:3]:
+        p = tf.add_paragraph()
+        p.space_before = Pt(4)
+        rb = p.add_run()
+        rb.text = "•  "
+        rb.font.name = "Pretendard SemiBold"
+        rb.font.size = Pt(11)
+        rb.font.color.rgb = pal["PURPLE"]
+        rt = p.add_run()
+        rt.text = str(line)
+        rt.font.name = "Pretendard"
+        rt.font.size = Pt(11)
+        rt.font.color.rgb = pal["SUBT"]
+
+
+CHART_TYPE_MAP = {
+    "column": "COLUMN_CLUSTERED",
+    "column_stacked": "COLUMN_STACKED",
+    "bar": "BAR_CLUSTERED",
+    "bar_stacked": "BAR_STACKED",
+    "line": "LINE",
+    "pie": "PIE",
+    "doughnut": "DOUGHNUT",
+    "area": "AREA",
+    "radar": "RADAR",
+}
+
+
+def inject_chart(slide, content: dict) -> list[str]:
+    """Render a native PowerPoint chart with title + headline + takeaways.
+    Chart data format: content.data = {chart_type, categories, series, insights}
+    """
+    from pptx.util import Emu, Pt
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+
+    pal = _deck_palette()
+    title = (content.get("title") or "").strip()
+    headline = (content.get("body") or "").strip()
+    data = content.get("data") or {}
+    categories = data.get("categories") or []
+    series_list = data.get("series") or []
+    chart_key = (data.get("chart_type") or "column").lower()
+    insights = [s for s in (data.get("insights") or []) if s and str(s).strip()]
+
+    _wipe_slide(slide)
+
+    # Title
+    if title:
+        _add_text(slide, 0.72, 0.72, 11.89, 0.55,
+                  runs=[{"text": title, "font": "Pretendard SemiBold",
+                         "size": 26, "color": pal["INK"]}])
+    # Headline
+    if headline:
+        _add_text(slide, 0.72, 1.45, 11.89, 0.6,
+                  runs=[{"text": headline, "font": "Pretendard",
+                         "size": 14, "color": pal["SUBT"]}])
+
+    # Chart
+    if categories and series_list:
+        chart_data = CategoryChartData()
+        chart_data.categories = list(categories)
+        for s in series_list:
+            name = s.get("name", "")
+            values = tuple(s.get("values", []))
+            chart_data.add_series(name, values)
+
+        xl_type = getattr(XL_CHART_TYPE, CHART_TYPE_MAP.get(chart_key, "COLUMN_CLUSTERED"))
+        x = Emu(int(0.72 * 914400))
+        y = Emu(int(2.25 * 914400))
+        cx = Emu(int(11.89 * 914400))
+        cy = Emu(int(3.0 * 914400))
+        chart_shape = slide.shapes.add_chart(xl_type, x, y, cx, cy, chart_data)
+        chart = chart_shape.chart
+        chart.has_title = False
+        chart.has_legend = len(series_list) > 1
+        if chart.has_legend:
+            chart.legend.position = XL_LEGEND_POSITION.TOP
+            chart.legend.include_in_layout = False
+            chart.legend.font.size = Pt(10)
+            chart.legend.font.name = "Pretendard"
+        # Category/value axis font
+        for ax_name in ("category_axis", "value_axis"):
+            try:
+                ax = getattr(chart, ax_name)
+                ax.tick_labels.font.size = Pt(9)
+                ax.tick_labels.font.name = "Pretendard"
+                ax.tick_labels.font.color.rgb = pal["MUTED"]
+            except Exception:
+                pass
+
+    # Takeaways
+    _add_takeaways(slide, insights, top=5.4, height=1.9)
+    return []
+
+
+def inject_exec_summary(slide, content: dict) -> list[str]:
+    """High-level executive summary page: section label + massive headline
+    + 3 supporting callouts + closing statement."""
+    from pptx.util import Emu, Pt
+    from pptx.enum.shapes import MSO_SHAPE
+
+    pal = _deck_palette()
+    _wipe_slide(slide)
+
+    title = (content.get("title") or "Executive Summary").strip()
+    headline = (content.get("body") or "").strip()
+    data = content.get("data") or {}
+    pillars = data.get("pillars") or []           # [{label, value, caption}]
+    closing_line = (data.get("closing") or "").strip()
+
+    # Small label (top-left eyebrow)
+    _add_text(slide, 0.72, 0.72, 11.89, 0.35,
+              runs=[{"text": "EXECUTIVE SUMMARY", "font": "Pretendard SemiBold",
+                     "size": 10, "color": pal["PURPLE"]}])
+    # Big title
+    _add_text(slide, 0.72, 1.10, 11.89, 0.8,
+              runs=[{"text": title, "font": "Pretendard SemiBold",
+                     "size": 30, "color": pal["INK"]}])
+    # Headline narrative
+    if headline:
+        _add_text(slide, 0.72, 2.05, 11.89, 1.0,
+                  runs=[{"text": headline, "font": "Pretendard",
+                         "size": 15, "color": pal["SUBT"]}])
+
+    # Three supporting pillars
+    pillars = pillars[:3]
+    if pillars:
+        pillar_top = 3.45
+        pillar_h = 2.1
+        gap = 0.25
+        total_w = 11.89
+        card_w = (total_w - gap * (len(pillars) - 1)) / len(pillars)
+        left = 0.72
+        for i, pl in enumerate(pillars):
+            x = left + i * (card_w + gap)
+            # Card
+            bg = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                        Emu(int(x * 914400)), Emu(int(pillar_top * 914400)),
+                                        Emu(int(card_w * 914400)), Emu(int(pillar_h * 914400)))
+            bg.fill.solid()
+            bg.fill.fore_color.rgb = pal["CARD"]
+            bg.line.color.rgb = pal["CARD_EDGE"]
+            bg.line.width = Emu(int(0.01 * 914400))
+            bg.shadow.inherit = False
+            bg.text_frame.text = ""
+            # Accent bar on top
+            accent = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE,
+                                             Emu(int(x * 914400)), Emu(int(pillar_top * 914400)),
+                                             Emu(int(card_w * 914400)), Emu(int(0.08 * 914400)))
+            accent.fill.solid()
+            accent.fill.fore_color.rgb = pal["PURPLE"]
+            accent.line.fill.background()
+            accent.shadow.inherit = False
+            accent.text_frame.text = ""
+            # Label
+            _add_text(slide, x + 0.3, pillar_top + 0.3, card_w - 0.6, 0.3,
+                      runs=[{"text": str(pl.get("label", "")),
+                             "font": "Pretendard SemiBold", "size": 11,
+                             "color": pal["MUTED"]}])
+            # Value
+            val = str(pl.get("value", ""))
+            width_score = sum(2 if ord(c) > 0x3130 else 1 for c in val)
+            if width_score <= 6: vsize = 26
+            elif width_score <= 10: vsize = 20
+            elif width_score <= 14: vsize = 16
+            else: vsize = 14
+            _add_text(slide, x + 0.3, pillar_top + 0.65, card_w - 0.6, 0.8,
+                      runs=[{"text": val, "font": "Pretendard SemiBold",
+                             "size": vsize, "color": pal["INK"]}])
+            # Caption
+            cap = str(pl.get("caption", ""))
+            if cap:
+                _add_text(slide, x + 0.3, pillar_top + 1.45, card_w - 0.6, 0.55,
+                          runs=[{"text": cap, "font": "Pretendard",
+                                 "size": 10, "color": pal["SUBT"]}])
+
+    if closing_line:
+        _add_text(slide, 0.72, 5.75, 11.89, 0.4,
+                  runs=[{"text": closing_line, "font": "Pretendard SemiBold",
+                         "size": 12, "color": pal["PURPLE"]}])
+    return []
+
+
+def inject_findings(slide, content: dict) -> list[str]:
+    """Findings + next steps page — two-column layout.
+    data: {findings: [str], next_steps: [str]}"""
+    from pptx.util import Emu, Pt
+    from pptx.enum.shapes import MSO_SHAPE
+
+    pal = _deck_palette()
+    _wipe_slide(slide)
+
+    title = (content.get("title") or "Key Findings & Next Steps").strip()
+    headline = (content.get("body") or "").strip()
+    data = content.get("data") or {}
+    findings = [s for s in (data.get("findings") or []) if s and str(s).strip()]
+    next_steps = [s for s in (data.get("next_steps") or []) if s and str(s).strip()]
+
+    _add_text(slide, 0.72, 0.72, 11.89, 0.55,
+              runs=[{"text": title, "font": "Pretendard SemiBold",
+                     "size": 26, "color": pal["INK"]}])
+    if headline:
+        _add_text(slide, 0.72, 1.45, 11.89, 0.5,
+                  runs=[{"text": headline, "font": "Pretendard",
+                         "size": 14, "color": pal["SUBT"]}])
+
+    col_top = 2.25
+    col_h = 4.5
+    col_w = 5.82
+    gap = 0.25
+    left = 0.72
+
+    def render_column(x, label, items, accent_color):
+        # Card background
+        bg = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                     Emu(int(x * 914400)), Emu(int(col_top * 914400)),
+                                     Emu(int(col_w * 914400)), Emu(int(col_h * 914400)))
+        bg.fill.solid()
+        bg.fill.fore_color.rgb = pal["CARD"]
+        bg.line.color.rgb = pal["CARD_EDGE"]
+        bg.line.width = Emu(int(0.01 * 914400))
+        bg.shadow.inherit = False
+        bg.text_frame.text = ""
+        # Label strip
+        _add_text(slide, x + 0.4, col_top + 0.35, col_w - 0.8, 0.35,
+                  runs=[{"text": label, "font": "Pretendard SemiBold",
+                         "size": 10, "color": accent_color}])
+        # Items
+        tb = slide.shapes.add_textbox(Emu(int((x + 0.4) * 914400)),
+                                       Emu(int((col_top + 0.8) * 914400)),
+                                       Emu(int((col_w - 0.8) * 914400)),
+                                       Emu(int((col_h - 1.2) * 914400)))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        tf.margin_left = tf.margin_right = Emu(0)
+        tf.margin_top = tf.margin_bottom = Emu(0)
+        first = True
+        for i, line in enumerate(items[:5]):
+            if first:
+                p = tf.paragraphs[0]
+                first = False
+            else:
+                p = tf.add_paragraph()
+                p.space_before = Pt(6)
+            num = p.add_run()
+            num.text = f"{i+1:02d}   "
+            num.font.name = "Pretendard SemiBold"
+            num.font.size = Pt(13)
+            num.font.color.rgb = accent_color
+            body_run = p.add_run()
+            body_run.text = str(line)
+            body_run.font.name = "Pretendard"
+            body_run.font.size = Pt(11)
+            body_run.font.color.rgb = pal["SUBT"]
+
+    render_column(left, "KEY FINDINGS", findings, pal["PURPLE"])
+    render_column(left + col_w + gap, "NEXT STEPS", next_steps, pal["INK"])
+    return []
+
+
 def inject_process(slide, content: dict) -> list[str]:
     steps = (content.get("data") or {}).get("steps", []) or []
     title = content.get("title", "")
@@ -762,6 +1086,9 @@ INJECTORS = {
     "section": inject_section,
     "kpi": inject_kpi,
     "dashboard": inject_dashboard,
+    "chart": inject_chart,
+    "exec_summary": inject_exec_summary,
+    "findings": inject_findings,
     "process": inject_process,
     "matrix": inject_matrix,
     "table": inject_table,

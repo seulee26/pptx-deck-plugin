@@ -9,7 +9,7 @@ v0.3 — ADAPTIVE FIT
     table, truncates 1 row/1 col) over slide 52 (7×3, would lose half the data).
 
 Size contract:
-    MAX_TOTAL_SLIDES = 30   Hard ceiling. Items are trimmed from the tail of
+    MAX_TOTAL_SLIDES = 40   Hard ceiling. Items are trimmed from the tail of
     each section if the budget would overflow.
 """
 
@@ -20,7 +20,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-MAX_TOTAL_SLIDES = 30
+MAX_TOTAL_SLIDES = 40
 
 
 def build_classified(classification: dict) -> list[dict]:
@@ -198,6 +198,24 @@ def build_plan(outline: dict, classification: dict) -> dict:
         content={"headings": [s.get("heading", "") for s in padded]},
     )
 
+    # Optional deck-level Executive Summary page, placed right after agenda.
+    exec_summary = outline.get("exec_summary")
+    tables = kind_map.get("table", [])
+    blank_canvas_idx = 54 if any(t["index"] == 54 for t in tables) else (tables[0]["index"] if tables else None)
+    if exec_summary and blank_canvas_idx is not None:
+        add(
+            source_index=blank_canvas_idx,
+            kind="exec_summary",
+            content={
+                "title": exec_summary.get("title", ""),
+                "body": exec_summary.get("body", ""),
+                "data": {
+                    "pillars": exec_summary.get("pillars", []),
+                    "closing": exec_summary.get("closing", ""),
+                },
+            },
+        )
+
     for n, section in enumerate(sections, start=1):
         heading = section.get("heading", f"Section {n}")
         add(
@@ -208,11 +226,11 @@ def build_plan(outline: dict, classification: dict) -> dict:
         for item in section.get("items", []):
             kind = item.get("type", "content")
 
-            # 'dashboard' is a synthetic kind we inject ourselves — it reuses
-            # the cleanest table source (slide 54) as a blank canvas and the
-            # dashboard injector wipes every shape to redraw from scratch.
-            if kind == "dashboard":
-                # prefer slide 54 if present, else first table slide
+            # Synthetic kinds drawn from scratch on a blank-canvas source
+            # (slide 54). The respective injectors wipe every shape before
+            # building their custom layout.
+            SYNTHETIC = {"dashboard", "chart", "exec_summary", "findings"}
+            if kind in SYNTHETIC:
                 tables = kind_map.get("table", [])
                 idx = 54 if any(t["index"] == 54 for t in tables) else (tables[0]["index"] if tables else None)
                 if idx is None:
@@ -220,7 +238,7 @@ def build_plan(outline: dict, classification: dict) -> dict:
                 else:
                     add(
                         source_index=idx,
-                        kind="dashboard",
+                        kind=kind,
                         content={
                             "title": item.get("title", ""),
                             "body": item.get("body", ""),
@@ -258,6 +276,22 @@ def build_plan(outline: dict, classification: dict) -> dict:
                     "data": item.get("data", {}),
                 },
             )
+
+    # Optional deck-level Findings & Next Steps page, placed right before closing.
+    findings = outline.get("findings")
+    if findings and blank_canvas_idx is not None:
+        add(
+            source_index=blank_canvas_idx,
+            kind="findings",
+            content={
+                "title": findings.get("title", "Key Findings & Next Steps"),
+                "body": findings.get("body", ""),
+                "data": {
+                    "findings": findings.get("findings", []),
+                    "next_steps": findings.get("next_steps", []),
+                },
+            },
+        )
 
     closing = kind_map["closing"][0]
     add(
