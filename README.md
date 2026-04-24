@@ -1,104 +1,204 @@
-# pptx-deck plugin
+# pptx-deck-plugin
 
-Claude Code plugin that turns an **Excel / Word / PDF** into a pixel-perfect `.pptx` matching a PowerPoint template you already own. An agent team drives the pipeline and picks the right template slide for each piece of content.
+**엑셀(또는 워드/PDF) 파일 하나로, 내가 가진 파워포인트 템플릿 그대로 PPT를 자동으로 만들어주는 도구입니다.**
 
-Design fidelity is preserved by **cloning the template's slide XML verbatim** and swapping only the text runs — colors, fonts, layout, and logo positions are byte-identical to the source.
+내용은 내가 쓴 엑셀을 따라가고, 디자인은 템플릿이 그대로 유지됩니다. 색상, 폰트, 로고 위치, 모양 하나 바뀌지 않아요.
 
-## Install
+---
+
+## 이 도구가 하는 일 (그림으로)
+
+```
+┌────────────┐   ┌──────────────┐   ┌────────────┐
+│  엑셀 파일  │ + │ 내 PPT 템플릿 │ → │ 완성된 PPT │
+│ (내가 쓴 글) │   │ (예쁜 디자인)  │   │   (deck.pptx)  │
+└────────────┘   └──────────────┘   └────────────┘
+```
+
+내부적으로는 "AI 에이전트 팀"이 움직입니다:
+
+1. **내용 읽기** — 엑셀/워드/PDF에서 제목, 섹션, 숫자, 표 같은 걸 뽑아냄
+2. **슬라이드 매칭** — 템플릿의 어떤 슬라이드(표지? 목차? SWOT? 숫자 슬라이드?)를 쓸지 고름
+3. **조립** — 고른 슬라이드를 **그대로 복사**해서 내용만 바꿔 넣음
+4. **검증** — 글자가 빠지진 않았는지 확인
+
+---
+
+## 사용하기 전에 필요한 것
+
+### 1. 내 PPT 템플릿 (`.pptx`)
+이미 디자인이 만들어져 있는 파워포인트 파일이 하나 있어야 해요. 표지/목차/본문 슬라이드 등이 있는 보통의 비즈니스 템플릿이면 됩니다.
+
+### 2. 컴퓨터에 파이썬 설치
+파이썬(Python)은 이 도구를 실행할 프로그램입니다. 이미 있는지 확인하려면 터미널(맥은 "터미널" 앱, 윈도우는 "PowerShell")을 열고:
 
 ```bash
-git clone https://github.com/<your-user>/pptx-deck-plugin.git
+python3 --version
+```
+
+`Python 3.11.x` 같은 게 나오면 OK. 없다면 https://www.python.org 에서 다운로드.
+
+### 3. Claude Code 설치
+이 도구는 [Claude Code](https://claude.com/claude-code)라는 AI 코딩 도구 안에서 돌아갑니다. Claude Code가 이미 설치되어 있다고 가정합니다.
+
+---
+
+## 설치 (딱 3단계)
+
+### 1단계: 이 플러그인 다운로드
+
+터미널에서:
+
+```bash
+git clone https://github.com/seulee26/pptx-deck-plugin.git
 cd pptx-deck-plugin
-pip install python-pptx openpyxl python-docx pypdf
 ```
 
-LibreOffice is required for preview rendering:
+### 2단계: 필요한 파이썬 라이브러리 설치
 
 ```bash
-brew install --cask libreoffice        # macOS
-# apt install libreoffice              # linux
+pip3 install python-pptx openpyxl python-docx pypdf
 ```
 
-Link the plugin into Claude Code by pointing your plugin marketplace / settings at this directory, or copy it under `~/.claude/plugins/`.
+한 줄 복붙하면 끝. 뭔가 설치되는 메시지가 쭉 나올 거예요.
 
-## Bring your own template
+### 3단계 (맥 사용자): LibreOffice 설치
 
-The design lives entirely in **one file** you provide:
+완성된 PPT를 미리 이미지로 확인해주는 프로그램이에요. 맥에서:
 
-```
-assets/
-├── template.pptx          ← your template (not committed)
-└── classification.json    ← catalog generated from it
+```bash
+brew install --cask libreoffice
 ```
 
-One-time bootstrap:
+(Homebrew가 없으면 https://brew.sh 에서 설치 먼저)
 
-1. Drop your template at `assets/template.pptx`.
-2. Run the classifier to build `classification.json`:
+윈도우는 https://www.libreoffice.org 에서 다운로드.
 
-   ```bash
-   python3 scripts/classify_template.py assets/template.pptx assets/classification.json
-   ```
+---
 
-   (The classifier identifies each slide as one of `cover / agenda / section / kpi / process / matrix / table / image / content / closing` — rules live in `scripts/classify_template.py`.)
+## 처음 한 번만 하는 설정
 
-3. Everything downstream reads from `classification.json` — the agents never touch the template directly.
+내 템플릿을 이 도구가 "이해"할 수 있게 한 번만 분석해줘야 합니다.
 
-## Usage
+### 1. 내 템플릿을 `assets` 폴더에 넣기
 
-```
-/make-deck path/to/input.xlsx
-/make-deck path/to/input.docx out/my-deck.pptx
-/make-deck path/to/report.pdf
-```
+파인더/탐색기에서 내 PPT 파일을 이 프로젝트의 `assets/` 폴더에 복사하고 이름을 **정확히 `template.pptx`** 로 바꿔주세요.
 
-`deck-orchestrator` runs the pipeline end-to-end and returns the final deck path plus a QA report.
+### 2. 분석 실행
 
-### Excel input convention
+터미널에서:
 
-| sheet     | rows                                                                                     |
-|-----------|------------------------------------------------------------------------------------------|
-| `meta`    | `title`, `subtitle`, `company`, `closing` as key/value rows (all optional)               |
-| anything else | one sheet per section (sheet name = heading). Item rows start with `KPI`, `PROCESS`, `MATRIX`, `TABLE`, `IMAGE`, or `CONTENT`; remaining cells carry data. Unmarked rows become `CONTENT` items. |
-
-See `scripts/make_sample_xlsx.py` for a working example.
-
-Word uses `Heading 1/2/3` hierarchy; PDF parses per page.
-
-## Agent team
-
-```
-             ┌─────────────────────────┐
-   user ───▶ │  deck-orchestrator      │  (director)
-             └───┬──────┬──────┬───┬───┘
-                 │      │      │   │
-       content-parser   │      │   qa-verifier
-          (xlsx/docx/   │      │   (render + lint)
-           pdf → outline)│     │
-                  slide-matcher
-                  (outline + classification.json
-                   → slide_plan)
-                               │
-                       deck-assembler
-                  (clone XML, inject text → deck.pptx)
+```bash
+python3 scripts/classify_template.py assets/template.pptx assets/classification.json
 ```
 
-## Layout
+이러면 템플릿의 각 슬라이드가 어떤 타입(표지/목차/SWOT/숫자 슬라이드 등)인지 자동으로 분류돼서 `classification.json`에 저장됩니다.
+
+---
+
+## 사용법
+
+Claude Code 안에서:
 
 ```
-.claude-plugin/plugin.json
-agents/            # 5 agent prompts
-commands/          # /make-deck slash command
-scripts/           # Python pipeline (parse, match, assemble, render)
-assets/            # your template + classification.json (template gitignored)
+/make-deck 내엑셀파일.xlsx
 ```
 
-## Pipeline contract (pixel-perfect)
+이게 전부입니다. 2~3분 기다리면 `out/deck.pptx` 파일이 생성돼요.
 
-- Slides are **cloned** from the template — no new shapes, layouts, or masters are created.
-- Only run-level `.text` is modified. `<a:rPr>` (font, size, color, spacing) is never touched.
-- If a placeholder pattern isn't found on a slide, the slide is left as-is and the QA report flags it — we do not "best effort" write into a random text box.
+### 출력 파일 위치 지정하고 싶으면
 
-## License
+```
+/make-deck 내엑셀파일.xlsx 내가원하는폴더/결과물.pptx
+```
 
-Plugin code: MIT. Your template and any generated decks are yours — nothing from this repo claims rights on them.
+### 워드 파일이나 PDF로도 가능
+
+```
+/make-deck 보고서.docx
+/make-deck 리포트.pdf
+```
+
+---
+
+## 엑셀 파일은 어떻게 써야 하나요?
+
+**가장 간단한 방법**: 아무 형식으로 써도 동작은 합니다 — 첫 열은 제목으로, 나머지는 본문으로 들어갑니다.
+
+**제대로 쓰는 방법**: 시트와 행을 아래 규칙대로 정리하면 훨씬 깔끔한 결과가 나와요.
+
+### 1번째 시트: `meta` (선택)
+
+| A열 (키)    | B열 (값)                     |
+|-----------|-----------------------------|
+| title     | 2026 사업 리뷰                |
+| subtitle  | Q1 성과와 전망                |
+| company   | 우리회사 이름                 |
+| closing   | 감사합니다                    |
+
+### 2번째 시트부터: 각 섹션
+
+시트 이름 = 섹션 제목 (예: "성과", "성장 전략", "운영")
+
+각 행의 A열에 **아래 키워드**를 쓰면, 그 타입의 슬라이드가 생깁니다:
+
+| A열 (타입)  | B열 (제목)         | C열 (설명)            | D열~                             |
+|-----------|-------------------|---------------------|--------------------------------|
+| `KPI`     | 매출             | Q1 총 매출            | ₩12.4B \| +18%                  |
+| `PROCESS` | 온보딩 절차       |                    | 가입 \| 인증 \| 활성화 \| 사용      |
+| `MATRIX`  | SWOT             |                    | 강점내용 \| 약점내용 \| 기회내용 \| 위협내용 |
+| `TABLE`   | 월별 성과        |                    | 월 \| 매출 \| 사용자 수 (헤더)       |
+|           |                  |                    | 1월 \| ₩3.8B \| 1.9M (데이터 행)   |
+| `IMAGE`   | 제품 스크린샷     | 기기별 캡처           |                                |
+| `CONTENT` | 아무 제목        | 본문 내용             |                                |
+
+**팁**: `CONTENT` 대신 첫 칸을 비워두고 써도 됩니다. 전혀 모르겠으면 `scripts/make_sample_xlsx.py`를 한 번 열어보세요 — 실제 동작하는 예시가 그대로 들어 있어요.
+
+### 샘플 만들어보기
+
+```bash
+python3 scripts/make_sample_xlsx.py
+```
+
+이러면 `out/sample.xlsx`가 생깁니다. 한 번 돌려봐서 감을 잡으세요.
+
+---
+
+## 자주 묻는 질문
+
+**Q. 템플릿 디자인이 진짜 1픽셀도 안 바뀌나요?**
+네. 원본 슬라이드를 통째로 복사해서 글자만 바꿔넣는 방식입니다. 폰트/색/위치는 건드리지 않아요.
+
+**Q. 템플릿에 없는 타입의 슬라이드가 필요하면?**
+못 만듭니다. 이 도구는 "없는 디자인을 새로 그리지 않는다"는 원칙이에요. 필요한 디자인을 템플릿에 먼저 추가한 뒤 다시 `classify_template.py`를 돌리세요.
+
+**Q. SWOT의 "S 자리에 기회가 들어갔어요" 같은 문제가 생길 때는?**
+템플릿 슬라이드에 자리 표시자(예: "상세 타이틀")가 4개 이상 있으면 순서가 섞일 수 있어요. 지금은 알려진 한계이고, 결과물을 열어서 직접 위치만 바꾸시면 됩니다.
+
+**Q. 완성된 PPT를 이미지로 미리 보려면?**
+`out/preview/` 폴더에 슬라이드별 PNG가 자동 생성돼요.
+
+**Q. 내 템플릿은 공개 repo에 올라가나요?**
+아니요. `.gitignore`에 `assets/template.pptx`가 들어 있어서 본인 컴퓨터에만 남습니다.
+
+---
+
+## 폴더 구조
+
+```
+pptx-deck-plugin/
+├── assets/
+│   ├── template.pptx           ← 내 템플릿 (직접 넣어야 함)
+│   └── classification.json      ← 분석 결과 (자동 생성)
+├── agents/                      ← AI 에이전트 정의 (건드릴 필요 없음)
+├── scripts/                     ← 내부 파이썬 스크립트
+├── commands/make-deck.md        ← /make-deck 명령어
+└── out/                         ← 완성된 PPT가 여기에 저장됨
+```
+
+---
+
+## 라이선스
+
+코드: MIT (자유롭게 사용/수정 가능).
+본인 템플릿과 생성된 PPT의 저작권은 전적으로 본인의 것입니다. 이 repo는 그 어떤 권리도 주장하지 않습니다.
