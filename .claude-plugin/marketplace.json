@@ -1,0 +1,33 @@
+{
+  "name": "pptx-deck-plugin",
+  "metadata": {
+    "description": "Pixel-perfect PPT generator from Excel/Word/PDF, driven by a Claude Code agent team."
+  },
+  "owner": {
+    "name": "seulee26",
+    "url": "https://github.com/seulee26"
+  },
+  "plugins": [
+    {
+      "name": "pptx-deck",
+      "description": "Agent-driven Claude Code plugin that turns Excel/Word/PDF inputs into a PPT matching your template pixel-for-pixel.",
+      "version": "0.1.0",
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/seulee26/pptx-deck-plugin",
+      "author": {
+        "name": "seulee26",
+        "url": "https://github.com/seulee26"
+      },
+      "tags": [
+        "pptx",
+        "powerpoint",
+        "slides",
+        "deck",
+        "presentation",
+        "excel",
+        "template"
+      ]
+    }
+  ]
+}
